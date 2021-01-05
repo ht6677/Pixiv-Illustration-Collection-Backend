@@ -18,9 +18,9 @@ spring:
       max-file-size: 20MB
       max-request-size: 100MB
   mail:
-    host: mail
-    username: admin@cheerfun.dev
-    password: Cheerfun.dev
+    host:
+    username:
+    password:
     protocol: smtp
     properties:
       mail:
