@@ -13,8 +13,8 @@ import dev.cheerfun.pixivic.biz.web.illust.dto.SearchSuggestionSyncDTO;
 import dev.cheerfun.pixivic.biz.web.illust.dto.TagTranslation;
 import dev.cheerfun.pixivic.biz.web.illust.exception.SearchException;
 import dev.cheerfun.pixivic.biz.web.illust.secmapper.PixivSuggestionMapper;
-import dev.cheerfun.pixivic.biz.web.illust.util.ImageSearchUtil;
 import dev.cheerfun.pixivic.biz.web.illust.util.IllustSearchUtil;
+import dev.cheerfun.pixivic.biz.web.illust.util.ImageSearchUtil;
 import dev.cheerfun.pixivic.common.po.Illustration;
 import dev.cheerfun.pixivic.common.po.illust.Tag;
 import dev.cheerfun.pixivic.common.util.translate.service.TranslationUtil;
@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.AntPathMatcher;
 import org.springframework.web.servlet.HandlerMapping;
 
+import javax.annotation.PostConstruct;
 import javax.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.net.URI;
@@ -66,6 +67,7 @@ public class SearchService {
     private final ExecutorService saveToDBExecutorService;
     private Pattern moeGirlPattern = Pattern.compile("(?<=(?:title=\")).+?(?=\" data-serp-pos)");
 
+    @PostConstruct
     public void init() {
         savePixivSuggestionToDb();
     }
@@ -168,7 +170,7 @@ public class SearchService {
     }
 
     public SearchSuggestion getKeywordTranslation(String keyword) {
-        return new SearchSuggestion(translationUtil.translateToJapaneseByYouDao(keyword), keyword);
+        return new SearchSuggestion(translationUtil.translateToChineseByAzure(keyword), keyword);
     }
 
     @Cacheable(value = "bangumiSearch")
@@ -199,16 +201,17 @@ public class SearchService {
         return httpClient.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofString()).thenApply(r ->
                 moeGirlPattern.matcher(r.body()).results().map(result -> {
                     String matchKeyword = result.group();
-                    return new SearchSuggestion(matchKeyword, translationUtil.translateToJapaneseByYouDao(keyword));
+                    return new SearchSuggestion(matchKeyword, translationUtil.translateToChineseByAzure(keyword));
                 }).collect(Collectors.toList())
         );
 
     }
 
     public Illustration queryFirstSearchResult(String keyword) throws ExecutionException, InterruptedException {
-        List<Illustration> illustrations = searchByKeyword(keyword, 1, 0, "original", "illust", null, null, null, null, 0, null, null, null, 5, null).get();
-        if (illustrations != null && illustrations.size() > 0) {
-            return illustrations.get(0);
+        List<Illustration> illustList = searchByKeyword(keyword, 1, 0, "original", "illust", null, null, null, null, 0, null, null, null, 5, null).get();
+        if (illustList != null && illustList.size() > 0) {
+            //return illustrationBizService.queryIllustrationByIdFromDb(illustIdList.get(0));
+            return illustList.get(0);
         }
         return null;
     }
@@ -231,7 +234,7 @@ public class SearchService {
             Integer maxSanityLevel,
             Integer exceptId) {
         String build = searchUtil.build(keyword, pageSize, page, searchType, illustType, minWidth, minHeight, beginDate, endDate, xRestrict, popWeight, minTotalBookmarks, minTotalView, maxSanityLevel, exceptId);
-        CompletableFuture<List<Illustration>> request = searchUtil.request(build);
+        CompletableFuture<List<Illustration>> request = searchUtil.request(build).thenApply(illustrationBizService::queryIllustrationByIllustIdList);
         return request;
     }
 
@@ -248,8 +251,6 @@ public class SearchService {
     @Cacheable(value = "related")
     public CompletableFuture<List<Illustration>> queryIllustrationRelated(int illustId, int page, int pageSize) {
         Illustration illustration = illustrationBizService.queryIllustrationById(illustId);
-        illustration = objectMapper.convertValue(illustration, new TypeReference<Illustration>() {
-        });
         if (illustration != null && illustration.getTags().size() > 0) {
             String keywords = illustration.getTags().stream().filter(e -> !"".equals(e.getName())).limit(3).map(Tag::getName).reduce((x, y) -> x + "||" + y).get();
             return searchByKeyword(keywords, pageSize, page, "original", null, null, null, null, null, 0, null, null, null, 5, illustId);

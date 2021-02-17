@@ -47,7 +47,7 @@ import java.util.concurrent.ExecutorService;
 @Order(0)
 public class AuthProcessor {
     private final JWTUtil jwtUtil;
-    private final JoinPointArgUtil commonUtil;
+    private final JoinPointArgUtil joinPointArgUtil;
     private final StringRedisTemplate stringRedisTemplate;
     private final ExecutorService saveToDBExecutorService;
     private final AuthMapper authMapper;
@@ -70,7 +70,7 @@ public class AuthProcessor {
         PermissionRequired methodPermissionRequired = AnnotationUtils.findAnnotation(method, PermissionRequired.class);
         PermissionRequired classPermissionRequired = AnnotationUtils.findAnnotation(method.getDeclaringClass(), PermissionRequired.class);
         int authLevel = methodPermissionRequired != null ? methodPermissionRequired.value() : classPermissionRequired.value();
-        String token = commonUtil.getFirstMethodArgByAnnotationValueMethodValue(joinPoint, RequestHeader.class, AuthConstant.AUTHORIZATION);
+        String token = joinPointArgUtil.getFirstMethodArgByAnnotationValueMethodValue(joinPoint, RequestHeader.class, AuthConstant.AUTHORIZATION);
         /*进行jwt校验，成功则将返回包含Claim信息的Map（token即将过期则将刷新后的token放入返回值Map）
         过期则抛出自定义未授权过期异常*/
         if (token != null) {
@@ -107,7 +107,7 @@ public class AuthProcessor {
     }
 
     private ResponseEntity dealReturn(ResponseEntity responseEntity, Map<String, Object> claims) {
-        if (AppContext.get() != null && AppContext.get().get(AuthConstant.NEW_TOKEN) != null) {
+        if (claims.get(AuthConstant.NEW_TOKEN) != null) {
             responseEntity = ResponseEntity.status(responseEntity.getStatusCode())
                     .header(AuthConstant.AUTHORIZATION, String.valueOf(claims.get(AuthConstant.NEW_TOKEN)))
                     .body(responseEntity.getBody());

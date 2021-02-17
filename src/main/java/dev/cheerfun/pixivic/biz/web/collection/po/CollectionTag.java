@@ -2,7 +2,11 @@ package dev.cheerfun.pixivic.biz.web.collection.po;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonSetter;
+import dev.cheerfun.pixivic.basic.sensitive.annotation.SensitiveCheck;
 import lombok.Data;
+import org.hibernate.validator.constraints.Length;
+
+import javax.validation.constraints.Size;
 
 /**
  * @author OysterQAQ
@@ -17,5 +21,6 @@ public class CollectionTag {
     private Integer id;
     @JsonSetter("tag_name")
     @JsonAlias({"tagName", "tag_name"})
+    @SensitiveCheck
     private String tagName;
 }

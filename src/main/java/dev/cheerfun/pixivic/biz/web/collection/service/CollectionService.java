@@ -8,6 +8,7 @@ import dev.cheerfun.pixivic.biz.web.collection.dto.UpdateIllustrationOrderDTO;
 import dev.cheerfun.pixivic.biz.web.collection.mapper.CollectionMapper;
 import dev.cheerfun.pixivic.biz.web.collection.po.Collection;
 import dev.cheerfun.pixivic.biz.web.collection.po.CollectionTag;
+import dev.cheerfun.pixivic.biz.web.collection.util.CollectionSearchUtil;
 import dev.cheerfun.pixivic.biz.web.collection.util.CollectionTagSearchUtil;
 import dev.cheerfun.pixivic.biz.web.common.exception.BusinessException;
 import dev.cheerfun.pixivic.biz.web.illust.service.IllustrationBizService;
@@ -19,6 +20,7 @@ import dev.cheerfun.pixivic.common.po.illust.ImageUrl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.cache.annotation.Caching;
@@ -56,6 +58,8 @@ public class CollectionService {
     private final SensitiveFilter sensitiveFilter;
     private final IllustrationBizService illustrationBizService;
     private final CollectionTagSearchUtil collectionTagSearchUtil;
+    private final CollectionSearchUtil collectionSearchUtil;
+    private final CacheManager cacheManager;
 
     @Caching(evict = {
             @CacheEvict(value = "user_collection_digest_list", key = "#userId+'-0'"),
@@ -64,13 +68,6 @@ public class CollectionService {
             @CacheEvict("publicCollectionCount")
     })
     public Integer createCollection(Integer userId, Collection collection) {
-        //去除敏感词
-        List<CollectionTag> tagList = collection.getTagList();
-        if (tagList != null && tagList.size() > 0) {
-            tagList.forEach(e -> {
-                e.setTagName(sensitiveFilter.filter(e.getTagName()));
-            });
-        }
         collection.setCreateTime(LocalDateTime.now());
         //插入画集
         collection.setUserId(userId);
@@ -101,12 +98,6 @@ public class CollectionService {
         }
         //校验collectionId是否属于用户
         checkCollectionAuth(collection.getId(), userId);
-        List<CollectionTag> tagList = collection.getTagList();
-        if (tagList != null && tagList.size() > 0) {
-            tagList.forEach(e -> {
-                e.setTagName(sensitiveFilter.filter(e.getTagName()));
-            });
-        }
         collectionMapper.updateCollection(userId, collection);
         //是否修改了可见性
         //修改则清空收藏数以及收藏数据
@@ -158,12 +149,9 @@ public class CollectionService {
             }
         }
         collectionMapper.incrCollectionIllustCount(collectionId, sum);
-        if (collection.getIllustCount() == 0) {
-            List<ImageUrl> imageUrls = illustrationBizService.queryIllustrationById(illustrationIds.get(0)).getImageUrls();
-            List<ImageUrl> temp = new ArrayList<>();
-            temp.add(objectMapper.convertValue(imageUrls.get(0), new TypeReference<ImageUrl>() {
-            }));
-            collectionMapper.updateCollectionCover(collectionId, temp);
+        if (collection.getIllustCount() == 0 || collection.getCover() == null || collection.getCover().size() == 0) {
+            List<ImageUrl> imageUrlList = illustrationBizService.queryIllustrationByIdList(illustrationIds).stream().limit(5).map(i -> i.getImageUrls().get(0)).collect(Collectors.toList());
+            collectionMapper.updateCollectionCover(collectionId, imageUrlList);
         }
         return failed;
     }
@@ -294,7 +282,7 @@ public class CollectionService {
         if (collection.getIsPublic() == 0) {
             Map<String, Object> context = AppContext.get();
             if (context != null && context.get(AuthConstant.USER_ID) != null) {
-                if (context.get(AuthConstant.USER_ID) != collection.getUserId()) {
+                if ((int) context.get(AuthConstant.USER_ID) != collection.getUserId()) {
                     throw new BusinessException(HttpStatus.FORBIDDEN, "无权限访问");
                 }
             }
@@ -320,7 +308,7 @@ public class CollectionService {
     }
 
     public List<Collection> queryCollectionById(List<Integer> collectionId) {
-        return collectionId.stream().parallel().map(this::queryCollectionById).collect(Collectors.toList());
+        return collectionId.stream().parallel().filter(Objects::nonNull).map(this::queryCollectionById).filter(Objects::nonNull).collect(Collectors.toList());
     }
 
     public List<Collection> queryLatestPublicCollection(Integer page, Integer pageSize) {
@@ -384,7 +372,8 @@ public class CollectionService {
     @Transactional
     @Caching(evict = {
             @CacheEvict(value = "collectionSummary", key = "#userId+'-0'"),
-            @CacheEvict(value = "collectionSummary", key = "#userId+'-1'")
+            @CacheEvict(value = "collectionSummary", key = "#userId+'-1'"),
+            @CacheEvict(value = "collectionSummary", key = "#userId+'-null'"),
     })
     public void dealUserCollectionSummary(Integer userId) {
         collectionMapper.dealUserPublicCollectionSummary(userId);
@@ -408,7 +397,7 @@ public class CollectionService {
         Collection collection = queryCollectionById(collectionId);
         if (collection.getIsPublic() == 0) {
             Map<String, Object> context = AppContext.get();
-            if (context != null && context.get(AuthConstant.USER_ID) != null && context.get(AuthConstant.USER_ID) == collection.getUserId()) {
+            if (context != null && context.get(AuthConstant.USER_ID) != null && (int) context.get(AuthConstant.USER_ID) == collection.getUserId()) {
                 return collection;
             } else {
                 throw new BusinessException(HttpStatus.FORBIDDEN, "禁止查看他人未公开画集");
@@ -417,8 +406,9 @@ public class CollectionService {
         return collection;
     }
 
-    public List<Collection> searchCollection(String keyword, String mode) {
-        return null;
+    @Cacheable("collectionSerchResult")
+    public CompletableFuture<List<Collection>> searchCollection(String keyword, String startCreateDate, String endCreateDate, String startUpdateDate, String endUpdateDate, Integer page, Integer pageSize) {
+        return collectionSearchUtil.searchCollection(collectionSearchUtil.build(keyword, startCreateDate, endCreateDate, startUpdateDate, endUpdateDate, page, pageSize)).thenApply(this::queryCollectionById);
     }
 
     public Integer checkUserAuth(Integer isPublic, Integer userId) {
@@ -448,18 +438,17 @@ public class CollectionService {
 
     @Cacheable(value = "user_collection_digest_list", key = "#userId+'-'+#isPublic")
     public List<Integer> queryUserCollectionNameListFromDb(Integer userId, Integer isPublic) {
-        return collectionMapper.queryUserCollection(userId, 0, 200, 1, isPublic, "create_time", "desc");
+        return collectionMapper.queryUserCollection(userId, 0, 500, 1, isPublic, "create_time", "desc");
     }
 
     @CacheEvict(value = "collections", key = "#collectionId")
+    @Transactional
     public Boolean updateCollectionCover(Integer userId, Integer collectionId, List<Integer> illustIdList) {
         checkCollectionAuth(collectionId, userId);
         List<ImageUrl> imageUrlList = illustIdList.stream().map(e -> {
             Illustration illustration = illustrationBizService.queryIllustrationByIdFromDb(e);
             if (illustration != null) {
-                return objectMapper.convertValue(illustration
-                        .getImageUrls().get(0), new TypeReference<ImageUrl>() {
-                });
+                return illustration.getImageUrls().get(0);
             }
             return null;
         }).filter(Objects::nonNull).limit(5).collect(Collectors.toList());
@@ -467,4 +456,20 @@ public class CollectionService {
         return true;
     }
 
+    public Boolean fixCollectionCover() {
+        List<Integer> collections = collectionMapper.queryAllCollectionWithoutCover();
+        collections.forEach(e -> {
+            try {
+                List<ImageUrl> collect = queryCollectionIllust(e, 1, 5).stream().limit(5).map(i -> i.getImageUrls().get(0)).collect(Collectors.toList());
+                collectionMapper.updateCollectionCover(e, collect);
+            } catch (Exception exception) {
+                exception.printStackTrace();
+            }
+        });
+        return true;
+    }
+
+    public void evictCacheByUser(Integer userId) {
+        queryUserCollectionNameListFromDb(userId, null).stream().parallel().forEach(e -> cacheManager.getCache("collections").evictIfPresent(e));
+    }
 }

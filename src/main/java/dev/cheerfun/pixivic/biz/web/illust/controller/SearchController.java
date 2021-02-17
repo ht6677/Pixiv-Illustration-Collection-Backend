@@ -2,6 +2,7 @@ package dev.cheerfun.pixivic.biz.web.illust.controller;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import dev.cheerfun.pixivic.basic.auth.annotation.PermissionRequired;
+import dev.cheerfun.pixivic.basic.auth.constant.PermissionLevel;
 import dev.cheerfun.pixivic.basic.ratelimit.annotation.RateLimit;
 import dev.cheerfun.pixivic.basic.sensitive.annotation.SensitiveCheck;
 import dev.cheerfun.pixivic.biz.ad.annotation.WithAdvertisement;
@@ -10,6 +11,7 @@ import dev.cheerfun.pixivic.biz.analysis.tag.service.TrendingTagsService;
 import dev.cheerfun.pixivic.biz.userInfo.annotation.WithUserInfo;
 import dev.cheerfun.pixivic.biz.web.illust.domain.SearchSuggestion;
 import dev.cheerfun.pixivic.biz.web.illust.domain.response.PixivSearchCandidatesResponse;
+import dev.cheerfun.pixivic.biz.web.illust.service.IllustrationBizService;
 import dev.cheerfun.pixivic.biz.web.illust.service.SearchService;
 import dev.cheerfun.pixivic.common.po.Illustration;
 import dev.cheerfun.pixivic.common.po.Result;
@@ -43,6 +45,7 @@ import java.util.concurrent.CompletableFuture;
 @RequiredArgsConstructor(onConstructor = @__(@Autowired))
 public class SearchController {
     private final SearchService searchService;
+    private final IllustrationBizService illustrationBizService;
     private final TranslationUtil translationUtil;
     private final TrendingTagsService trendingTagsService;
 
@@ -74,7 +77,7 @@ public class SearchController {
     @GetMapping("/illustrations")
     @WithUserInfo
     @WithAdvertisement
-    @PermissionRequired
+    @PermissionRequired(PermissionLevel.ANONYMOUS)
     @RateLimit
     public CompletableFuture<ResponseEntity<Result<List<Illustration>>>> searchByKeyword(
             @SensitiveCheck
@@ -112,7 +115,7 @@ public class SearchController {
         if ("autoTranslate".equals(searchType)) {
             //自动翻译
             String[] keywords = keyword.split("\\|\\|");
-            keyword = Arrays.stream(keywords).map(translationUtil::translateToJapaneseByYouDao).reduce((s1, s2) -> s1 + " " + s2).get();
+            keyword = Arrays.stream(keywords).map(translationUtil::translateToChineseByAzure).reduce((s1, s2) -> s1 + " " + s2).get();
         }
         CompletableFuture<List<Illustration>> searchResultCompletableFuture = searchService.searchByKeyword(keyword, pageSize, page, searchType, illustType, minWidth, minHeight, beginDate, endDate, xRestrict, popWeight, minTotalBookmarks, minTotalView, maxSanityLevel, null);
         return searchResultCompletableFuture.thenApply(illustrations -> ResponseEntity.ok().body(new Result<>("搜索结果获取成功", illustrations)));

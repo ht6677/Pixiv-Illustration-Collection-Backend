@@ -3,7 +3,7 @@ package dev.cheerfun.pixivic.biz.web.user.controller;
 import dev.cheerfun.pixivic.basic.auth.annotation.PermissionRequired;
 import dev.cheerfun.pixivic.basic.auth.util.JWTUtil;
 import dev.cheerfun.pixivic.basic.verification.annotation.CheckVerification;
-import dev.cheerfun.pixivic.biz.credit.po.CreditHistory;
+import dev.cheerfun.pixivic.biz.web.common.exception.UserCommonException;
 import dev.cheerfun.pixivic.biz.web.common.po.User;
 import dev.cheerfun.pixivic.biz.web.user.dto.CheckInDTO;
 import dev.cheerfun.pixivic.biz.web.user.dto.ResetPasswordDTO;
@@ -11,24 +11,24 @@ import dev.cheerfun.pixivic.biz.web.user.dto.SignInDTO;
 import dev.cheerfun.pixivic.biz.web.user.dto.SignUpDTO;
 import dev.cheerfun.pixivic.biz.web.user.service.CommonService;
 import dev.cheerfun.pixivic.biz.web.user.util.PasswordUtil;
+import dev.cheerfun.pixivic.biz.web.user.util.RecaptchaUtil;
 import dev.cheerfun.pixivic.biz.web.vip.service.VIPUserService;
 import dev.cheerfun.pixivic.common.constant.AuthConstant;
 import dev.cheerfun.pixivic.common.context.AppContext;
 import dev.cheerfun.pixivic.common.po.Picture;
 import dev.cheerfun.pixivic.common.po.Result;
 import lombok.RequiredArgsConstructor;
+import org.hibernate.validator.constraints.Length;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import javax.validation.Valid;
 import javax.validation.constraints.Email;
-import javax.validation.constraints.Max;
 import javax.validation.constraints.NotBlank;
-import javax.validation.constraints.Size;
 import java.io.IOException;
-import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 /**
@@ -45,6 +45,7 @@ public class CommonController {
     private final CommonService userService;
     private final VIPUserService vipUserService;
     private final PasswordUtil passwordUtil;
+    private final RecaptchaUtil recaptchaUtil;
     private final JWTUtil jwtUtil;
 
     @GetMapping("/{userId}")
@@ -54,7 +55,7 @@ public class CommonController {
     }
 
     @GetMapping("/usernames/{username}")
-    public ResponseEntity<Result> checkUsername(@NotBlank @PathVariable("username") @Size(min = 2, max = 50) String username) {
+    public ResponseEntity<Result> checkUsername(@NotBlank @PathVariable("username") @Length(min = 2, max = 50) String username) {
         if (userService.checkUsername(username)) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(new Result<>("用户名已存在"));
         }
@@ -71,7 +72,15 @@ public class CommonController {
 
     @PostMapping
     @CheckVerification
-    public ResponseEntity<Result<User>> signUp(@RequestBody SignUpDTO userInfo, @RequestParam("vid") String vid, @RequestParam("value") String value) {
+    public ResponseEntity<Result<User>> signUp(@RequestBody @Valid SignUpDTO userInfo, @RequestParam("vid") String vid, @RequestParam("value") String value) {
+        User user = userInfo.castToUser();
+        user = userService.signUp(user);
+        return ResponseEntity.ok().header("Authorization", jwtUtil.getToken(user)).body(new Result<>("注册成功", user));
+    }
+
+    @PostMapping("/checkByRecaptcha")
+    public ResponseEntity<Result<User>> signUpCheckByRecaptcha(@RequestBody SignUpDTO userInfo) throws IOException, InterruptedException {
+        recaptchaUtil.check(userInfo.getGRecaptchaResponse());
         User user = userInfo.castToUser();
         user = userService.signUp(user);
         return ResponseEntity.ok().header("Authorization", jwtUtil.getToken(user)).body(new Result<>("注册成功", user));
@@ -122,6 +131,25 @@ public class CommonController {
     public ResponseEntity<Result<User>> updateUserInfo(@PathVariable("userId") Integer userId, @RequestBody User user, @RequestHeader("Authorization") String token) {
         userService.updateUserInfo((int) AppContext.get().get(AuthConstant.USER_ID), user);
         return ResponseEntity.ok().body(new Result<>("更新用户信息成功", user));
+    }
+
+    //校验名字
+    @PostMapping("/checkUsername")
+    public ResponseEntity<Result<String>> checkUsernameSensitive(@RequestParam String username) {
+        return ResponseEntity.ok().body(new Result<>("获取用户名校验结果成功", userService.checkUsernameSensitive(username)));
+    }
+
+    //修改名字
+    @PutMapping("/{userId}/username")
+    @PermissionRequired
+    public ResponseEntity<Result<User>> updateUsername(@RequestParam String username, @RequestHeader("Authorization") String token) {
+        User user = null;
+        try {
+            user = userService.updateUsername((Integer) AppContext.get().get(AuthConstant.USER_ID), username);
+        } catch (Exception e) {
+            throw new UserCommonException(HttpStatus.BAD_REQUEST, "修改失败，可能是用户名重复");
+        }
+        return ResponseEntity.ok().body(new Result<>("修改用户名成功，部分模块缓存等待自动刷新", user));
     }
 
     @GetMapping("/{userId}/email/isCheck")
@@ -182,8 +210,8 @@ public class CommonController {
     @PermissionRequired
     public ResponseEntity<Result<User>> updatePermissionLevel(@RequestParam String exchangeCode, @PathVariable("userId") int userId, @RequestHeader("Authorization") String token) {
         Integer uid = (Integer) AppContext.get().get(AuthConstant.USER_ID);
-        User user = userService.queryUser(uid);
         vipUserService.exchangeVIP(uid, exchangeCode);
+        User user = userService.queryUser(uid);
         return ResponseEntity.ok().header("Authorization", jwtUtil.getToken(user)).body(new Result<>("兑换成功", user));
     }
 

@@ -12,9 +12,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.stream.Collectors;
 
 /**
  * @author OysterQAQ
@@ -27,8 +31,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 @RequiredArgsConstructor(onConstructor = @__(@Autowired))
 public class VIPProxyServerService {
     private final VIPProxyServerMapper vipProxyServerMapper;
-    private List<VIPProxyServer> availableList;
-    private Integer availableListSize;
+    private List<VIPProxyServer> availableServerList;
+    private List<VIPProxyServer> serverList;
     private final ExecutorService crawlerExecutorService;
     ReentrantReadWriteLock lock = new ReentrantReadWriteLock(false);
     final ReentrantReadWriteLock.ReadLock readLock = lock.readLock();
@@ -39,7 +43,8 @@ public class VIPProxyServerService {
     public void init() {
         try {
             //获取服务器列表，并且尝试是否可用
-            availableList = queryAllServer();
+            serverList = vipProxyServerMapper.queryAllServer();
+            availableServerList = new ArrayList<>(serverList);
             loopCheck();
         } catch (Exception exception) {
             log.error("初始化vip高速服务器服务失败");
@@ -49,18 +54,22 @@ public class VIPProxyServerService {
     public void loopCheck() {
         crawlerExecutorService.submit(() -> {
             while (true) {
-                writeLock.lock();
+                log.info("开始周期性检查高级会员线路可用性");
                 try {
-                    availableList.forEach(e -> {
+                    List<VIPProxyServer> tempList = serverList.stream().parallel().filter(e -> {
                         if (!check(e)) {
-                            ban(e);
+                            log.error("检测到" + e + "高级会员线路下线");
+                            //ban(e);
+                            return false;
                         }
-                    });
-                    availableList = queryAllServer();
-                    availableListSize = availableList.size();
+                        return true;
+                    }).collect(Collectors.toList());
+                    writeLock.lock();
+                    availableServerList = tempList;
                 } finally {
                     writeLock.unlock();
                 }
+                log.info("检查高级会员线路可用性完成");
                 Thread.sleep(1000 * 60 * 5);
             }
         });
@@ -69,7 +78,7 @@ public class VIPProxyServerService {
     public List<VIPProxyServer> queryAllServer() {
         readLock.lock();
         try {
-            return vipProxyServerMapper.queryAllServer();
+            return availableServerList;
         } finally {
             readLock.unlock();
         }
@@ -79,15 +88,11 @@ public class VIPProxyServerService {
         try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(vipProxyServer.getServerAddress() + "/test.jpg")).GET().build();
-            int statusCode = httpClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
-            if (statusCode == 404) {
-                return true;
-            }
+            httpClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
         } catch (Exception e) {
-            e.printStackTrace();
-            //ban(vipProxyServer);
+            return false;
         }
-        return false;
+        return true;
     }
 
     public void ban(VIPProxyServer vipProxyServer) {
@@ -98,8 +103,7 @@ public class VIPProxyServerService {
         writeLock.lock();
         try {
             vipProxyServerMapper.addServer(vipProxyServer);
-            availableList = queryAllServer();
-            availableListSize = availableList.size();
+            serverList = vipProxyServerMapper.queryAllServer();
         } finally {
             writeLock.unlock();
         }

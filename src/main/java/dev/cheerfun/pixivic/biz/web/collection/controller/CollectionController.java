@@ -18,9 +18,12 @@ import dev.cheerfun.pixivic.common.po.illust.ImageUrl;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import javax.validation.Valid;
 import javax.validation.constraints.Max;
+import javax.validation.constraints.NotNull;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -31,6 +34,7 @@ import java.util.concurrent.CompletableFuture;
  * @description CollectionController
  */
 @RestController
+@Validated
 @RequiredArgsConstructor(onConstructor = @__(@Autowired))
 public class CollectionController {
     private final CollectionService collectionService;
@@ -38,7 +42,7 @@ public class CollectionController {
     //新建画集
     @PostMapping("/collections")
     @PermissionRequired
-    public ResponseEntity<Result<Integer>> createCollection(@RequestBody @SensitiveCheck Collection collection, @RequestHeader(value = "Authorization") String token) {
+    public ResponseEntity<Result<Integer>> createCollection(@RequestBody @Valid @SensitiveCheck Collection collection, @RequestHeader(value = "Authorization") String token) {
         Integer userId = (Integer) AppContext.get().get(AuthConstant.USER_ID);
         return ResponseEntity.ok().body(new Result<>("新建画集成功", collectionService.createCollection(userId, collection)));
     }
@@ -46,12 +50,12 @@ public class CollectionController {
     //修改画集元数据
     @PutMapping("/collections/{collectionId}")
     @PermissionRequired
-    public ResponseEntity<Result<Boolean>> updateCollection(@PathVariable Integer collectionId, @RequestBody @SensitiveCheck Collection collection, @RequestHeader(value = "Authorization") String token) {
+    public ResponseEntity<Result<Boolean>> updateCollection(@PathVariable Integer collectionId, @RequestBody @Valid @SensitiveCheck Collection collection, @RequestHeader(value = "Authorization") String token) {
         Integer userId = (Integer) AppContext.get().get(AuthConstant.USER_ID);
         return ResponseEntity.ok().body(new Result<>("修改画集成功", collectionService.updateCollection(userId, collection)));
     }
 
-    //修改画集元数据
+    //获取画集元数据
     @GetMapping("/collections/{collectionId}")
     @PermissionRequired(PermissionLevel.ANONYMOUS)
     public ResponseEntity<Result<Collection>> getCollection(@PathVariable Integer collectionId, @RequestHeader(value = "Authorization", required = false) String token) {
@@ -72,7 +76,7 @@ public class CollectionController {
     public ResponseEntity<Result<List<Integer>>> addIllustrationToCollection(@PathVariable Integer collectionId, @RequestBody List<Integer> illustrationIds, @RequestHeader(value = "Authorization") String token) {
         Integer userId = (Integer) AppContext.get().get(AuthConstant.USER_ID);
         List<Integer> illustIdList = collectionService.addIllustrationToCollection(userId, collectionId, illustrationIds);
-        return ResponseEntity.ok().body(new Result<>("添加画作成功" + (illustIdList.size() > 0 ? "重复作品如下" : ""), illustIdList));
+        return ResponseEntity.ok().body(new Result<>("添加画作成功" + (illustIdList.size() > 0 ? "，存在一些重复画作" : ""), illustIdList));
     }
 
     //从画集中删除画作
@@ -118,7 +122,7 @@ public class CollectionController {
     //查询用户画集
     @GetMapping("/users/{userId}/collections")
     @PermissionRequired(PermissionLevel.ANONYMOUS)
-    public ResponseEntity<Result<List<Collection>>> queryUserCollection(@PathVariable Integer userId, @RequestHeader(value = "Authorization", required = false) String token, @RequestParam(defaultValue = "1") Integer page, @RequestParam(defaultValue = "10") @Max(15) Integer pageSize, @RequestParam(required = false) Integer isPublic, @RequestParam(value = "orderBy", defaultValue = "create_time") String orderBy, @RequestParam(value = "orderByMode", defaultValue = "desc") String orderByMode) {
+    public ResponseEntity<Result<List<Collection>>> queryUserCollection(@PathVariable Integer userId, @RequestHeader(value = "Authorization", required = false) String token, @RequestParam(defaultValue = "1") Integer page, @RequestParam(defaultValue = "10") @Max(30) Integer pageSize, @RequestParam(required = false) Integer isPublic, @RequestParam(value = "orderBy", defaultValue = "create_time") String orderBy, @RequestParam(value = "orderByMode", defaultValue = "desc") String orderByMode) {
         Integer isSelf = collectionService.checkUserAuth(isPublic, userId);
         if ("updateTime".equals(orderBy)) {
             orderBy = "update_time";
@@ -129,7 +133,7 @@ public class CollectionController {
     //查询用户所有画集名字
     @GetMapping("/users/{userId}/collectionsDigest")
     @PermissionRequired(PermissionLevel.ANONYMOUS)
-    public ResponseEntity<Result<List<CollectionDigest>>> queryUserCollectionNameList(@PathVariable Integer userId, @RequestHeader(value = "Authorization", required = false) String token, @RequestParam(required = false) Integer isPublic) {
+    public ResponseEntity<Result<List<CollectionDigest>>> queryUserCollectionNameList(@PathVariable Integer userId, @RequestHeader(value = "Authorization") String token, @RequestParam(required = false) Integer isPublic) {
         return ResponseEntity.ok().body(new Result<>("获取用户画集名称列表成功", collectionService.queryUserCollectionNameList((Integer) AppContext.get().get(AuthConstant.USER_ID), isPublic)));
     }
 
@@ -137,7 +141,6 @@ public class CollectionController {
     @GetMapping("/collections/{collectionId}/illustrations")
     @WithUserInfo
     @PermissionRequired
-    //@WithAdvertisement
     public ResponseEntity<Result<List<Illustration>>> queryCollectionIllust(@PathVariable Integer collectionId, @RequestHeader(value = "Authorization", required = false) String token, @RequestParam(defaultValue = "1") Integer page, @RequestParam(defaultValue = "30") @Max(30) Integer pageSize, @RequestParam(required = false) String userFinger) {
         //用户指纹 放到hyperlog记录浏览量
         if (page == 1 && userFinger != null) {
@@ -167,8 +170,8 @@ public class CollectionController {
 
     //搜索画集
     @GetMapping("/collections")
-    public ResponseEntity<Result<List<Collection>>> searchCollection(@RequestBody UpdateIllustrationOrderDTO updateIllustrationOrderDTO, @RequestHeader(value = "Authorization", required = false) String token, @RequestParam("mode") String mode) {
-        return null;
+    public CompletableFuture<ResponseEntity<Result<List<Collection>>>> searchCollection(@RequestParam String keyword, @RequestParam(required = false) String startCreateDate, @RequestParam(required = false) String endCreateDate, @RequestParam(required = false) String startUpdateDate, @RequestParam(required = false) String endUpdateDate, @RequestParam(defaultValue = "1") Integer page, @RequestParam(defaultValue = "30") @Max(30) Integer pageSize, @RequestHeader(value = "Authorization") String token) {
+        return collectionService.searchCollection(keyword, startCreateDate, endCreateDate, startUpdateDate, endUpdateDate, page, pageSize).thenApply(e -> ResponseEntity.ok().body(new Result<>("获取搜索结果成功", e)));
     }
 
 }

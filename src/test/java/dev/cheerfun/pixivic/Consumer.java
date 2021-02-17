@@ -1,37 +1,39 @@
 package dev.cheerfun.pixivic;
 
-import com.google.common.collect.Lists;
 import com.google.common.io.BaseEncoding;
-import io.github.bucket4j.*;
-import org.apache.commons.lang3.StringUtils;
-import org.checkerframework.checker.units.qual.C;
+import com.google.common.io.Files;
+import dev.cheerfun.pixivic.biz.web.vip.po.ExchangeCode;
+import dev.cheerfun.pixivic.common.util.encrypt.CRC8;
+import lombok.Data;
+import org.codehaus.jackson.map.ObjectMapper;
+import org.datavec.image.loader.NativeImageLoader;
+import org.datavec.image.transform.ColorConversionTransform;
+import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.api.ops.impl.broadcast.BroadcastSubOp;
+import org.nd4j.linalg.dataset.api.preprocessor.DataNormalization;
+import org.nd4j.linalg.dataset.api.preprocessor.VGG16ImagePreProcessor;
+import org.nd4j.linalg.factory.Nd4j;
 
-import javax.crypto.BadPaddingException;
-import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.NoSuchPaddingException;
-import javax.crypto.spec.ChaCha20ParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.lang.reflect.Field;
-import java.math.BigDecimal;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
-import java.security.InvalidAlgorithmParameterException;
-import java.security.InvalidKeyException;
-import java.security.Key;
-import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.Period;
 import java.util.Arrays;
-import java.util.Map;
-import java.util.concurrent.TimeoutException;
+import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static dev.cheerfun.pixivic.common.util.encrypt.ChaCha20.chacha20Decrypt;
-import static dev.cheerfun.pixivic.common.util.encrypt.ChaCha20.chacha20Encrypt;
+import static org.opencv.imgproc.Imgproc.COLOR_BGR2RGB;
 
 /**
  * @author OysterQAQ
@@ -41,38 +43,38 @@ import static dev.cheerfun.pixivic.common.util.encrypt.ChaCha20.chacha20Encrypt;
  */
 public class Consumer {
     public static void main(String[] args) throws Exception {
-        Integer a = null;
-        System.out.println(a);
-        System.out.println(172800 / 60 / 60 / 24);
-        System.out.println(1800000L / 1000 / 60);
-
+        System.out.println();
+        String s = UUID.randomUUID().toString() + "#123";
+        System.out.println(s
+                .substring(s.indexOf("#") + 1));
+        System.out.println(Period.between(LocalDate.of(2020, 12, 22), LocalDate.of(2020, 12, 22)).getDays());
+        System.out.println(validateExchangeCode("PNRJ7KVAHFHXGYD7"));
     }
 
-    public static byte[] intToBytes(int value) {
-
-        byte[] src = new byte[4];
-
-        src[3] = (byte) ((value >> 24) & 0xFF);
-
-        src[2] = (byte) ((value >> 16) & 0xFF);
-
-        src[1] = (byte) ((value >> 8) & 0xFF);
-
-        src[0] = (byte) (value & 0xFF);
-
-        return src;
-
-    }
-
-    public static byte[] hex2bytes(String hex) {
-        hex = hex.replaceAll("[: ]", "");
-        byte[] result = new byte[hex.length() / 2];
-        for (int i = 0; i < result.length; i++) {
-            String hexByte = hex.substring(i * 2, i * 2 + 2);
-            result[i] = (byte) Integer.parseInt(hexByte, 16);
+    public static ExchangeCode validateExchangeCode(String exchangeCode) {
+        byte[] decode = BaseEncoding.base32().decode(exchangeCode);
+        //首先校验 校验和
+        byte c = CRC8.calcCrc8(decode, 0, 9);
+        if (c == decode[9]) {
+            //解密
+            byte[] ciphertext = new byte[9];
+            System.arraycopy(decode, 0, ciphertext, 0, ciphertext.length);
+            byte[] payload = chacha20Decrypt(ciphertext, "生蚝是位兴趣使然的OTAKU".getBytes(StandardCharsets.UTF_8), "PIXIVICJUST4".getBytes(StandardCharsets.UTF_8), 21);
+            //得到编号
+            byte[] codeId = new byte[4];
+            codeId[0] = payload[0];
+            codeId[1] = payload[2];
+            codeId[2] = payload[4];
+            codeId[3] = payload[6];
+            ByteBuffer wrapped = ByteBuffer.wrap(codeId, 0, 4);
+            return new ExchangeCode(wrapped.getInt(), payload[8]);
         }
-        return result;
+        return null;
     }
-
 }
 
+@Data
+class Predictions {
+    Float[][] predictions;
+
+}

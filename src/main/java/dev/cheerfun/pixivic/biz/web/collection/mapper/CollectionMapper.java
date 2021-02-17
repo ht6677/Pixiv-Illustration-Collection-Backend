@@ -130,6 +130,7 @@ public interface CollectionMapper {
             @Result(property = "isPublic", column = "is_public"),
             @Result(property = "useFlag", column = "use_flag"),
             @Result(property = "forbidComment", column = "forbid_comment"),
+            @Result(property = "pornWarning", column = "porn_warning"),
             @Result(property = "totalBookmarked", column = "total_bookmarked"),
             @Result(property = "totalView", column = "total_view"),
             @Result(property = "totalPeopleSeen", column = "total_people_seen"),
@@ -167,7 +168,7 @@ public interface CollectionMapper {
     Integer decrCollectionTotalLike(Integer collectionId);
 
     @Update("update user_collection_summary\n" +
-            "set private_collection_sum=(select count(*)\n" +
+            "set public_collection_sum=(select count(*)\n" +
             "                            from collections\n" +
             "                            where use_flag = 1 and is_public = 1 and collections.user_id = #{userId})\n" +
             "where user_id = #{userId}")
@@ -232,5 +233,8 @@ public interface CollectionMapper {
 
     @Select("select count(*) from collections where use_flag = 1 and is_public = 0 ")
     Integer queryPublicCollectionCount();
+
+    @Select("select collection_id from collections where illust_count>0 and cover='[]'")
+    List<Integer> queryAllCollectionWithoutCover();
 
 }

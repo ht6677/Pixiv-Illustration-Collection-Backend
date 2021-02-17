@@ -13,18 +13,16 @@ import dev.cheerfun.pixivic.common.po.illust.Tag;
 import dev.cheerfun.pixivic.common.util.pixiv.RequestUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Async;
+import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.PostConstruct;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -40,7 +38,13 @@ public class IllustrationService {
     private static final List<ModeMeta> modes;
     private static final HashMap<String, Integer> modeIndex;
     private static final Integer taskSum;
-    private static ReentrantLock lock = new ReentrantLock();
+    private LinkedBlockingQueue<List<Illustration>> waitForSaveToDbIllustList;
+    private final RequestUtil requestUtil;
+    private final IllustrationMapper illustrationMapper;
+    private final ObjectMapper objectMapper;
+    private final ExecutorService saveToDBExecutorService;
+    private final ArtistIllustRelationMapper artistIllustRelationMapper;
+    private final CacheManager cacheManager;
 
     static {
         taskSum = 162;
@@ -80,10 +84,11 @@ public class IllustrationService {
         }};
     }
 
-    private final RequestUtil requestUtil;
-    private final IllustrationMapper illustrationMapper;
-    private final ObjectMapper objectMapper;
-    private final ArtistIllustRelationMapper artistIllustRelationMapper;
+    @PostConstruct
+    public void init() {
+        waitForSaveToDbIllustList = new LinkedBlockingQueue<>(1024 * 1000);
+        dealWaitForSaveToDbIllustList();
+    }
 
     public List<Integer> pullAllRankInfo(LocalDate date) throws InterruptedException {
         final CountDownLatch cd = new CountDownLatch(taskSum);
@@ -108,8 +113,11 @@ public class IllustrationService {
         }
         System.err.println("失败队列：");
         waitForReDownload.forEach(System.out::println);
-        illustrationLists.removeIf(Objects::isNull);
-        saveToDb(illustrationLists.stream().flatMap(Collection::stream).filter(Objects::nonNull).collect(Collectors.toList()));
+        illustrationLists.forEach(e -> {
+            if (e != null && e.size() > 0) {
+                saveToDb(e);
+            }
+        });
         return illustrationLists.stream().flatMap(Collection::stream).filter(Objects::nonNull).map(Illustration::getArtistId).distinct().collect(Collectors.toList());
     }
 
@@ -157,9 +165,12 @@ public class IllustrationService {
         cd.await(waitForReDownload.size() * 2, TimeUnit.SECONDS);
     }
 
-    @Transactional(rollbackFor = Exception.class)
-    @Async("saveToDBExecutorService")
     public void saveToDb(List<Illustration> illustrations) {
+        waitForSaveToDbIllustList.offer(illustrations);
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED, rollbackFor = Exception.class, transactionManager = "SecondaryTransactionManager")
+    public void saveToDbSync(List<Illustration> illustrations) {
         List<Tag> tags = illustrations.stream().parallel().map(Illustration::getTags).flatMap(Collection::stream).collect(Collectors.toList());
         if (tags.size() > 0) {
             illustrationMapper.insertTag(tags);
@@ -183,7 +194,25 @@ public class IllustrationService {
         //illustrationMapper.flush();
     }
 
-    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void dealWaitForSaveToDbIllustList() {
+        saveToDBExecutorService.submit(() -> {
+            while (true) {
+                try {
+                    List<Illustration> illustrationList = waitForSaveToDbIllustList.take();
+                    saveToDbSync(illustrationList);
+                    putIllustCache(illustrationList);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+
+    }
+
+    public void putIllustCache(List<Illustration> illustrationList) {
+        illustrationList.stream().parallel().forEach(e -> cacheManager.getCache("illust").put(e.getId(), e));
+    }
+
     public void insertArtistIllustRelation(List<Illustration> illustrations) {
         try {
             artistIllustRelationMapper.batchiInsertArtistIllustRelation(illustrations);
@@ -193,7 +222,6 @@ public class IllustrationService {
 
     }
 
-    @Transactional(rollbackFor = Exception.class)
     public void saveToDb2(List<Illustration> illustrations) {
         List<Tag> tags = illustrations.stream().parallel().map(Illustration::getTags).flatMap(Collection::stream).collect(Collectors.toList());
         if (tags.size() > 0) {

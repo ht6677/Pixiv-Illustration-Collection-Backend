@@ -5,11 +5,14 @@ import dev.cheerfun.pixivic.basic.auth.util.JWTUtil;
 import dev.cheerfun.pixivic.basic.event.constant.ActionType;
 import dev.cheerfun.pixivic.basic.event.constant.ObjectType;
 import dev.cheerfun.pixivic.basic.event.domain.Event;
+import dev.cheerfun.pixivic.basic.sensitive.util.SensitiveFilter;
 import dev.cheerfun.pixivic.basic.verification.domain.EmailBindingVerificationCode;
 import dev.cheerfun.pixivic.biz.credit.customer.CreditEventCustomer;
+import dev.cheerfun.pixivic.biz.web.collection.service.CollectionService;
 import dev.cheerfun.pixivic.biz.web.common.exception.BusinessException;
 import dev.cheerfun.pixivic.biz.web.common.exception.UserCommonException;
 import dev.cheerfun.pixivic.biz.web.common.po.User;
+import dev.cheerfun.pixivic.biz.web.illust.service.IllustrationBizService;
 import dev.cheerfun.pixivic.biz.web.illust.service.SearchService;
 import dev.cheerfun.pixivic.biz.web.sentence.po.Sentence;
 import dev.cheerfun.pixivic.biz.web.sentence.service.SentenceService;
@@ -21,14 +24,17 @@ import dev.cheerfun.pixivic.common.po.Picture;
 import dev.cheerfun.pixivic.common.util.email.EmailUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.AntPathMatcher;
 import org.springframework.web.servlet.HandlerMapping;
 
+import javax.annotation.PostConstruct;
 import javax.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.net.URI;
@@ -38,8 +44,8 @@ import java.net.http.HttpResponse;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Random;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * @author OysterQAQ
@@ -65,8 +71,9 @@ public class CommonService {
     private final CreditEventCustomer creditEventCustomer;
     private final SearchService searchService;
     private final SentenceService sentenceService;
-    private final Random random = new Random(21);
-    //private final PooledGMService pooledGMService;
+    private final IllustrationBizService illustrationBizService;
+    private final SensitiveFilter sensitiveFilter;
+    private final CollectionService collectionService;
 
     public User signUp(User user) {
         //检测用户名或邮箱是否重复
@@ -132,10 +139,8 @@ public class CommonService {
     }
 
     public int setPasswordByEmail(String password, String email) {
-        System.out.println("开始重置" + email + "的密码为" + password);
         User user = queryUserByEmail(email);
         if (user != null) {
-            System.out.println(user);
             return setPasswordById(passwordUtil.encrypt(password), user.getId());
         }
         throw new BusinessException(HttpStatus.BAD_REQUEST, "邮箱不存在");
@@ -241,13 +246,13 @@ public class CommonService {
     public Boolean updateUserPermissionLevel(Integer userId, byte type) {
         User user = queryUser(userId);
         //首先查询用户是否会员且未过期
-        if (user.getPermissionLevel() == PermissionLevel.VIP && user.getPermissionLevelExpireDate() != null && user.getPermissionLevelExpireDate().isAfter(LocalDateTime.now())) {
+        if (user.getPermissionLevel() >= PermissionLevel.VIP && user.getPermissionLevelExpireDate() != null && user.getPermissionLevelExpireDate().isAfter(LocalDateTime.now())) {
             //如果是则叠加
             userMapper.extendPermissionLevelExpirationTime(userId, type);
             return true;
         } else {
             //如果不是则过期时间为当前时间加上type
-            userMapper.updatePermissionLevelExpirationTime(userId, PermissionLevel.VIP, LocalDateTime.now().plusHours(type * 24));
+            userMapper.updatePermissionLevelExpirationTime(userId, user.getPermissionLevel() > PermissionLevel.VIP ? user.getPermissionLevel() : PermissionLevel.VIP, LocalDateTime.now().plusHours(type * 24));
             return true;
         }
     }
@@ -279,6 +284,7 @@ public class CommonService {
         Illustration illustration = null;
         List<Illustration> illustrationList = searchService.searchByKeyword(sentence.getOriginateFromJP() != null ? sentence.getOriginateFromJP() : sentence.getOriginateFrom(), 10, 1, "original", null, null, null, null, null, 0, null, null, null, 5, null).get();
         if (illustrationList != null && illustrationList.size() > 0) {
+            ThreadLocalRandom random = ThreadLocalRandom.current();
             illustration = illustrationList.get(random.nextInt(illustrationList.size()));
         }
         return new CheckInDTO(score, sentence, illustration);
@@ -296,6 +302,62 @@ public class CommonService {
     @CacheEvict(value = "userRecentCheckDate", key = "#userId")
     public void checkIn(Integer userId) {
         userMapper.checkIn(userId, LocalDate.now().toString());
+    }
+
+    public String checkUsernameSensitive(String username) {
+        return sensitiveFilter.filter(username);
+    }
+
+    @Transactional
+    public User updateUsername(Integer userId, String username) {
+        //校验敏感词
+        username = sensitiveFilter.filter(username);
+        if (username.contains("*")) {
+            throw new UserCommonException(HttpStatus.BAD_REQUEST, "用户名中包含非法关键词或者*");
+        }
+        //校验改名记录表 每半年只能改一次
+        if (checkUserUpdateUsernameLog(userId)) {
+            updateUsernameToDb(userId, username);
+            //增加改名记录
+            insertUserUpdateUsernameLog(userId);
+            //清理缓存（主要是用户发布相关的，例如画集、讨论需要即时清理）
+            collectionService.evictCacheByUser(userId);
+            return queryUser(userId);
+        } else {
+            throw new UserCommonException(HttpStatus.BAD_REQUEST, "用户名每半年只能修改一次");
+        }
+    }
+
+    @Caching(evict = {
+            @CacheEvict(value = "checkUserUpdateUsernameLog", key = "#userId")
+    })
+    @Transactional
+    public void insertUserUpdateUsernameLog(Integer userId) {
+        userMapper.insertUserUpdateUsernameLog(userId);
+    }
+
+    @Caching(evict = {
+            @CacheEvict(value = "users", key = "#userId")
+    })
+    @Transactional
+    public void updateUsernameToDb(Integer userId, String username) {
+        userMapper.updateUsername(userId, username);
+        userMapper.updateUsernameInCollections(userId, username);
+        userMapper.updateFromUsernameInComments(userId, username);
+        userMapper.updateToUsernameInComments(userId, username);
+        userMapper.updateUsernameInDiscussions(userId, username);
+        userMapper.updateUsernameInRewards(userId, username);
+        userMapper.updateUsernameInUserArtistFollowed(userId, username);
+        userMapper.updateUsernameInUserCollectionBookmarked(userId, username);
+        userMapper.updateUsernameInUserIllustBookmarked(userId, username);
+        userMapper.updateUsernameInUserUserFollowed(userId, username);
+    }
+
+    @Cacheable("checkUserUpdateUsernameLog")
+    public boolean checkUserUpdateUsernameLog(Integer userId) {
+        LocalDateTime localDateTime = userMapper.queryUserUpdateUsernameLog(userId);
+        //没修改过,或者在三个月之前
+        return localDateTime == null || localDateTime.toLocalDate().isBefore(LocalDate.now().plusMonths(-6));
     }
 
 }
